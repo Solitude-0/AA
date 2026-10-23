@@ -1,0 +1,38 @@
+{
+ "board_members": {
+  "bk": "BK1347",
+  "name": "纺织鞋类制造",
+  "total": 1,
+  "got": 1,
+  "host": "push2.eastmoney.com",
+  "top": [
+   [
+    "华利集团",
+    6.06,
+    2770040.0
+   ]
+  ]
+ },
+ "universe_core": {
+  "err": "RuntimeError(\"RemoteDisconnected('Remote end closed connection without response')\")"
+ },
+ "universe_with_bj": {
+  "total": 5925,
+  "host": "82.push2.eastmoney.com"
+ },
+ "lhb_with_sort": {
+  "err": "RuntimeError(\"<HTTPError 404: 'Not Found'>\")"
+ },
+ "lhb_no_sort": {
+  "err": "RuntimeError(\"<HTTPError 404: 'Not Found'>\")"
+ },
+ "pool_RPT_STOCK_ZT_POOL": {
+  "err": "RuntimeError(\"<HTTPError 404: 'Not Found'>\")"
+ },
+ "pool_RPT_LIMIT_UP_POOL": {
+  "err": "RuntimeError(\"<HTTPError 404: 'Not Found'>\")"
+ },
+ "pool_RPT_ZT_POOL_MAIN": {
+  "err": "RuntimeError(\"<HTTPError 404: 'Not Found'>\")"
+ }
+}

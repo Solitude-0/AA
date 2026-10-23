@@ -1,0 +1,29 @@
+# 分析看盘 · 依赖清单（规划，M0 起使用）
+#
+# 当前阶段（方案 + 数据源探测）只依赖 Python 标准库，
+# 无需安装任何包即可运行 tools/probe_sources.py。
+#
+# M0 开始编码后取消下面注释：
+#
+# --- Web 框架 ---
+# fastapi==0.115.*
+# uvicorn[standard]==0.32.*
+# websockets>=13.0
+#
+# --- HTTP 客户端（采集层用异步并发）---
+# httpx[http2]>=0.27
+#
+# --- 数据库（psycopg3：一个驱动同时支持同步/异步）---
+# psycopg[binary,pool]>=3.2
+# greenlet>=3.0            # psycopg3 异步必需
+#
+# --- 其它 ---
+# python-dotenv>=1.0
+#
+# --- 测试 ---
+# pytest>=8.0
+# pytest-asyncio>=0.24
+#
+# 注意：
+# 1) 不要用 asyncpg——psycopg3 一驱两用，且 Windows 事件循环坑更少。
+# 2) 不要用 SQLAlchemy ORM 读热路径——实时快照用 dataclass + 原生 SQL。
