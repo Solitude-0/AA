@@ -197,7 +197,7 @@
     <div class="vd">
       <div class="t">结论一 · 秒级可行</div>
       <div class="v">全市场 0.22 秒一轮</div>
-      <div class="d">腾讯快照 5343 只 / 18 批 / 6 并发实测 217.9 ms，命中率 100%。瓶颈不在我们，在源端：连续竞价时段行情时间戳落后 2~5 秒，这是免费源的天花板，任何架构都消不掉。</div>
+      <div class="d">腾讯快照 5343 只 / 18 批 / 8 并发实测 <b>367 ms</b>（p95 396），命中率 100%。瓶颈不在我们，在源端：连续竞价时段行情时间戳落后 2~5 秒，这是免费源的天花板，任何架构都消不掉。</div>
     </div>
     <div class="vd">
       <div class="t">结论二 · 砍掉 Redis 与时序库</div>
@@ -245,27 +245,27 @@
 <!-- ============ 1 ============ -->
 <section id="s1">
   <h2><span class="n">01</span>项目定位与系统边界</h2>
-  <p class="lead">E 盘已经有一套 <code>测试\webapp</code>（FastAPI :8767 + PostgreSQL + 15 步收盘刷新链）。本项目不是重做它，两者职责完全不同，混在一起会互相拖累。</p>
+  <p class="lead">本项目<b>独立立项、独立部署、零外部依赖</b>：不读任何其它本地项目的产物、不调它们的接口、不复它们的代码。代码清单自带（<code>data/codes.json</code>）、数据库用独立库 <code>realtime</code>、前端与绘制全部自研。删掉 E 盘上任何其它项目，本系统照常跑。</p>
 
   <div class="scroll">
   <table>
-    <thead><tr><th style="width:14%">维度</th><th style="width:43%">现有 webapp（选股系统）</th><th style="width:43%">分析看盘（本项目）</th></tr></thead>
+    <thead><tr><th style="width:18%">维度</th><th style="width:82%">分析看盘（本项目）</th></tr></thead>
     <tbody>
-      <tr><td>回答的问题</td><td>"买什么"——判型、评分、候选、回测</td><td>"现在市场在发生什么"——强弱、热点、资金</td></tr>
-      <tr><td>时间尺度</td><td>T+1，收盘后批量 15~25 分钟</td><td>T+0，盘中 1~5 秒</td></tr>
-      <tr><td>数据形态</td><td>历史日线 128 万根 + 全市场快照 5779 行</td><td>内存热快照 + 分钟级落库</td></tr>
-      <tr><td>压力来源</td><td>CPU（指标计算）</td><td>I/O（上游限流、连接数）</td></tr>
-      <tr><td>可否合并</td><td colspan="2"><b>不合并代码，共享基础设施</b>：同一个 PG 实例（新库 <code>realtime</code>）、同一套 <code>sym_of()</code> 代码映射、同一份快照字段知识。两套服务各自跑，互不阻塞。</td></tr>
+      <tr><td>回答的问题</td><td>"现在市场在发生什么"——强弱、热点、资金</td></tr>
+      <tr><td>时间尺度</td><td>T+0，盘中 1~5 秒</td></tr>
+      <tr><td>数据形态</td><td>内存热快照 + 分钟级落库</td></tr>
+      <tr><td>压力来源</td><td>I/O（上游限流、连接数）</td></tr>
+      <tr><td>依赖边界</td><td><b>零代码依赖、零接口依赖</b>。唯一共用的是本机 PostgreSQL 实例（独立库 <code>realtime</code>，删别的库不影响本系统）。所有代码清单、映射规则、绘制组件都在本仓库内。</td></tr>
     </tbody>
   </table>
   </div>
 
   <div class="note plain">
-    <span class="h">为什么不直接扩展现有 webapp</span>
-    现有服务是单 worker、状态在进程内、刷新链跑满 25 分钟会占满 CPU。把秒级推送塞进去，一次大刷新就会把 WS 连接全部拖死。物理隔离是成本最低的稳定性方案——两个进程抢 CPU 最多是慢，抢事件循环是直接挂。
+    <span class="h">为什么必须单进程单 worker</span>
+    热快照、订阅集、异动缓冲全部在进程内，多 worker 会各持一份，推送立刻错乱。若把秒级推送和任何批量计算塞进同一进程，一次大计算就会把 WebSocket 连接全部拖死。物理隔离是成本最低的稳定性方案——两个进程抢 CPU 最多是慢，抢事件循环是直接挂。
   </div>
 
-  <h3>可复用资产</h3>
+  <h3>技术底座（全部在本仓库内）</h3>
   <div class="three">
     <div class="card" style="padding:16px 18px">
       <div style="font-weight:700;font-size:13.5px;margin-bottom:6px">代码映射</div>
@@ -288,10 +288,10 @@
   <p class="lead">这一节是整个方案的证据基础。所有数字来自 <code>tools/probe_sources.py</code>，原始输出在 <code>docs/probe-result.json</code>，可随时复跑。</p>
 
   <div class="kpis">
-    <div class="kpi"><div class="k">全市场一轮（5343 只）</div><div class="v">217.9<span style="font-size:13px"> ms</span></div><div class="u">18 批 / 6 并发 / 命中 100%</div></div>
-    <div class="kpi"><div class="k">单批 300 只（热）</div><div class="v">53.5<span style="font-size:13px"> ms</span></div><div class="u">冷 239.5 ms / 146.6 KB</div></div>
-    <div class="kpi"><div class="k">行情延迟（盘中）</div><div class="v">2–5<span style="font-size:13px"> s</span></div><div class="u">非交易时段会累积到 20 s+</div></div>
-    <div class="kpi"><div class="k">东财重试后可用率</div><div class="v">92<span style="font-size:13px"> %</span></div><div class="u">裸请求 0/12</div></div>
+    <div class="kpi"><div class="k">全市场一轮（5343 只）</div><div class="v">367<span style="font-size:13px"> ms</span></div><div class="u">18 批 / 8 并发 / 命中 100% / p95 396</div></div>
+    <div class="kpi"><div class="k">单批 300 只（热）</div><div class="v">49<span style="font-size:13px"> ms</span></div><div class="u">冷 237 ms / 146 KB</div></div>
+    <div class="kpi"><div class="k">行情延迟（盘中）</div><div class="v">2–5<span style="font-size:13px"> s</span></div><div class="u">非交易时段时间戳不推进</div></div>
+    <div class="kpi"><div class="k">东财重试后可用率</div><div class="v">92<span style="font-size:13px"> %</span></div><div class="u">但存在 IP 级封禁窗口</div></div>
   </div>
 
   <div class="note warn">
@@ -674,7 +674,7 @@ sort_key = {
     <tbody>
       <tr><td><b>L1 热</b></td><td>进程内存 dict</td><td>全市场最新快照 5563 行、板块 1043 行、指数 7 行、逐笔环形缓冲（自选 20 只 × 最近 200 笔）</td><td class="num">1~3 s（覆盖写）</td><td>进程存活期</td></tr>
       <tr><td><b>L2 温</b></td><td>PG 分区表</td><td>分钟快照、板块分钟、自选 tick（5 s 粒度）</td><td class="num">60 s / 5 s</td><td>5~20 交易日，滚动删分区</td></tr>
-      <tr><td><b>L3 冷</b></td><td>PG 表 + 复用 <code>daily_bar</code></td><td>日线、龙虎榜、收盘统计</td><td class="num">每日 15:05</td><td>长期</td></tr>
+      <tr><td><b>L3 冷</b></td><td>PG 表（本库自建）</td><td>日线、龙虎榜、收盘统计</td><td class="num">每日 15:05</td><td>长期</td></tr>
     </tbody>
   </table>
   </div>
@@ -882,9 +882,9 @@ sort_key = {
   <table>
     <thead><tr><th style="width:14%">能力</th><th style="width:26%">选型</th><th>理由</th></tr></thead>
     <tbody>
-      <tr><td>框架</td><td>Vue 3.5 本地 vendor（<b>无构建</b>）</td><td>与现有 webapp 一致，可离线、无 npm 依赖、改完刷新即可。盯盘工具不需要工程化</td></tr>
+      <tr><td>框架</td><td>Vue 3.5 本地 vendor（<b>无构建</b>）</td><td>可离线、无 npm 依赖、改完刷新即可。盯盘工具不需要工程化</td></tr>
       <tr><td>表格</td><td>原生 table + <code>content-visibility</code></td><td>500 行以内不需要虚拟列表；超出再上虚拟滚动</td></tr>
-      <tr><td>K 线</td><td><b>复用 <code>.build/parts/kline.js</code></b></td><td>已有滚轮缩放、支撑压力线、成交量，接口同构 <code>[date,o,c,h,l,v]</code>，零适配</td></tr>
+      <tr><td>K 线</td><td><b>自研 Canvas（<code>web/app.js</code> · <code>drawK</code>）</b></td><td>滚轮缩放 / 拖拽平移 / 全览复位 + 摆动点聚类出的 R1~R3 压力与 S1~S3 支撑 + 成交量筹码带，数据接口 <code>[date,o,c,h,l,v]</code></td></tr>
       <tr><td>资金流曲线</td><td>原生 Canvas（~80 行）</td><td>ECharts 约 1 MB，为一条折线引入不划算；Canvas 可复用 K 线绘制习惯</td></tr>
       <tr><td>样式</td><td>单文件 CSS 变量</td><td>主题切换只改变量；盯盘默认暗色更护眼</td></tr>
     </tbody>
@@ -980,7 +980,6 @@ sort_key = {
 │     └─ close.py              <span class="c"># 15:05 收盘作业：落库、龙虎榜、分区滚动</span>
 ├─ web\                        <span class="c"># 无构建 Vue3，静态挂 /</span>
 │  ├─ index.html / app.js / style.css
-│  ├─ parts\kline.js           <span class="c"># 从 .build 复制</span>
 │  └─ vendor\vue.global.prod.js
 ├─ sql\                        <span class="c"># 建表 + 分区函数（幂等）</span>
 ├─ tools\
@@ -1009,7 +1008,7 @@ cd E:\workbuddy_work\分析看盘
 .venv\Scripts\python.exe run.py
 
 <span class="c"># 访问</span>
-http://127.0.0.1:8768/            <span class="c"># 看板（避开现有 8767）</span>
+http://127.0.0.1:8768/            <span class="c"># 看板</span>
 http://127.0.0.1:8768/docs        <span class="c"># 接口文档</span>
 http://127.0.0.1:8768/api/health  <span class="c"># 健康检查</span>
 
@@ -1078,7 +1077,7 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe run.py &gt; state/server.log 2&g
 <!-- ============ 14 ============ -->
 <section id="s14">
   <h2><span class="n">14</span>实施计划</h2>
-  <p class="lead">按"每阶段都能独立验收"来切。M1 完成时就能看盘，后面是加维度。</p>
+  <p class="lead">按"每阶段都能独立验收"来切。M1 完成时就能看盘，后面是加维度。<b>截至 2026-10-23，M0–M5 已全部落地并实测验收</b>，下方灰底为实测值。</p>
 
   <div class="road">
     <div class="ms">
@@ -1086,49 +1085,61 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe run.py &gt; state/server.log 2&g
       <div class="box">
         <div class="h">地基：通道 + 解析 + 自校验 <span class="tag t-ok" style="margin-left:6px">已完成</span></div>
         <div class="d">已交付 <code>channel.py</code>（令牌桶/域名轮换/退避/熔断）、<code>tx.py</code>（批量快照 + 五档 + 三重自校验）、
-          <code>calendar.py</code>（交易时段闸门）、<code>tools/selfcheck_m0.py</code>、<code>tools/bench_latency.py</code>。</div>
-        <div class="ac">实测：5343 只 / 稳态 <b>434 ms</b> / 命中 <b>100%</b> / 坏数据 <b>0</b>（首轮 1.3 s 为 18 个 TLS 连接冷启动，单列不计）</div>
-        <div class="ac">待补：连续 30 分钟长跑（盘中执行），以及与东财统计的宽度对账</div>
+          <code>calendar.py</code>（交易时段闸门）、<code>tools/selfcheck_m0.py</code>、<code>tools/bench.py</code>。</div>
+        <div class="ac">实测：5343 只 / 稳态 <b>367 ms</b>（8 并发，p95 396）/ 命中 <b>100%</b> / 坏数据 <b>0</b> / 解析堆 11.6 MB</div>
+        <div class="ac">踩坑：首版 6 并发 434 ms 是针对「线程池切波」的妥协，参数矩阵实测后改为 8 并发</div>
       </div>
     </div>
     <div class="ms">
-      <div class="dot">M1</div>
+      <div class="dot">M1 ✅</div>
       <div class="box">
-        <div class="h">能看盘：指数 + 宽度 + 全市场表</div>
-        <div class="d">内存热层、宽度聚合、排行筛选 API、首屏页面（指数条 + 宽度条 + 个股表）。此时已可替代行情软件的看全局需求。</div>
-        <div class="ac">验收：页面 1 s 刷新，涨跌家数与东财口径差异 &lt;1%，连续盯盘 4 小时不崩</div>
+        <div class="h">能看盘：指数 + 宽度 + 全市场表 <span class="tag t-ok" style="margin-left:6px">已完成</span></div>
+        <div class="d">内存热层 <code>store.py</code>、宽度聚合、排行筛选 API、首屏页面（指数条 + 宽度条 + 12 桶直方图 + 个股表）。
+          此时已可替代行情软件的看全局需求。</div>
+        <div class="ac">实测：7 大指数全命中；宽度 涨 620 / 跌 4665 / 平 58 / 停 0（总数 5343 恒等式成立）</div>
+        <div class="ac">对账：自算成交额 10,557 亿 vs 上证+深证指数口径 10,680 亿 = <b>−1.15%</b></div>
       </div>
     </div>
     <div class="ms">
-      <div class="dot">M2</div>
+      <div class="dot">M2 ✅</div>
       <div class="box">
-        <div class="h">热点：板块三维 + 资金流</div>
-        <div class="d">板块 12 页采集、矩阵与表格双视图、板块钻取成分股、板块/个股资金流排行、大盘分钟资金流曲线。</div>
-        <div class="ac">验收：板块数据陈旧率 &lt;2%（熔断计入），板块→个股钻取可用</div>
+        <div class="h">热点：板块三维 + 资金流 <span class="tag t-ok" style="margin-left:6px">已完成</span></div>
+        <div class="d">板块 12 页采集、矩阵与表格双视图、5 种排序（含热度复合排序）、板块钻取成分股、
+          个股/板块资金流排行、大盘分钟资金流 Canvas 曲线。板块按 kind 独立容错，单类失败不影响其他两类。</div>
+        <div class="ac">实测：行业 496 / 概念 516 / 地域 31 可采；<b>东财 push2 存在 IP 级封禁窗口</b>（UA/Referer 三种组合全部 0.1~0.3 s 断连），
+          期间板块与资金流标「旧数据」并渐进冷却 30→300 s，指数与宽度不受影响</div>
+        <div class="ac">副产品：<code>datacenter-web</code> 域名不随 push2 一起封，龙虎榜始终可用</div>
       </div>
     </div>
     <div class="ms">
-      <div class="dot">M3</div>
+      <div class="dot">M3 ✅</div>
       <div class="box">
-        <div class="h">细节：WebSocket + 盘口 + 逐笔</div>
-        <div class="d">WS 订阅/合帧/断线全量、五档盘口组件、逐笔流水、变化闪烁、延迟角标、WS 失败回落轮询。</div>
-        <div class="ac">验收：订阅 200 标的时单帧 &lt;30 KB，前端掉帧 &lt;1%，断网重连 3 s 内恢复正确价格</div>
+        <div class="h">细节：WebSocket + 盘口 + 逐笔 <span class="tag t-ok" style="margin-left:6px">已完成</span></div>
+        <div class="d">WS 订阅/50 ms 合帧/断线全量/慢连接丢弃、五档盘口（带深度条）、逐笔流水（红买绿卖）、
+          延迟角标（含时段标签）、WS 三次失败回落 3 s 轮询。</div>
+        <div class="ac">实测帧体积：指数全量 494 B / 3 只报价 1.2 KB / 宽度 339 B / 异动 65 B；订阅 7 频道各回一帧全量</div>
+        <div class="ac">降级验证：WebSocket 不可用时自动进入轮询，表格仍保持 50 行实时数据</div>
       </div>
     </div>
     <div class="ms">
-      <div class="dot">M4</div>
+      <div class="dot">M4 ✅</div>
       <div class="box">
-        <div class="h">异动 + 落地存储</div>
-        <div class="d">异动事件流、分钟级落库与分区滚动、收盘作业、龙虎榜 T+1 入库、历史回看。</div>
-        <div class="ac">验收：连续 5 个交易日数据无缺口，分区自动滚动，库容稳定 &lt;3 GB</div>
+        <div class="h">异动 + 落地存储 <span class="tag t-ok" style="margin-left:6px">已完成</span></div>
+        <div class="d">三条异动规则（涨停开板 / 量比突增 / 3 分钟涨速）、分钟级落库与分区滚动、
+          收盘作业（<code>jobs/close.py</code>，幂等）、龙虎榜 T+1 入库、详情抽屉内分钟走势回看。</div>
+        <div class="ac">实测：COPY 落库 5343 行 = <b>167 ms</b>；龙虎榜 200 条入库（源端 26.98 万条）；
+          <code>realtime</code> 库与 dashboard 物理隔离，分区函数预建未来 2 天、按保留天数删过期分区</div>
+        <div class="ac">口径：涨速用 30 s 采样的 deque 序列（8 点覆盖 4 分钟），不给全市场存 tick 历史</div>
       </div>
     </div>
     <div class="ms">
-      <div class="dot">M5</div>
+      <div class="dot">M5 ✅</div>
       <div class="box">
-        <div class="h">打磨（可选）</div>
-        <div class="d">暗色主题、快捷键、自选池分组、声音预警、开机自启、与现有选股系统联动（点代码跳 8767 看判型）。</div>
-        <div class="ac">验收：连续一周作为主要盯盘工具使用，无致命卡顿</div>
+        <div class="h">打磨 <span class="tag t-ok" style="margin-left:6px">已完成</span></div>
+        <div class="d">暗色优先双主题、8 组快捷键、自选池分组（本地存储 + 后端同步）、
+          异动声音提醒、开机自启（<code>autostart_board.bat</code>）、龙虎榜抽屉、K 线缩放与压力支撑、个股操作建议（六模式）与所属板块面板。</div>
+        <div class="ac">验收：页面 7 指数 + 6 KPI + 50 行渲染通过（happy-dom 冒烟），无控制台异常</div>
+        <div class="ac">未做：多设备访问（当前只绑 127.0.0.1）</div>
       </div>
     </div>
   </div>

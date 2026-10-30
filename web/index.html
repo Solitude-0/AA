@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>实时分析</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" class="app" v-cloak>
+
+  <!-- ══ 顶栏：指数条 + 延迟角标 ══════════════════════════ -->
+  <div class="top">
+    <div class="brand"><span class="dot"></span>实时分析<small>A股</small></div>
+
+    <div class="idxstrip">
+      <div class="idx" v-for="i in idx" :key="i.c"
+           style="cursor:pointer" title="点击看该指数的 K 线与浪型标注"
+           @click="openDetailW(i.sym || i.c)">
+        <div class="n">{{ i.n }}</div>
+        <div>
+          <span class="v" :class="cls(i.pc)">{{ fmt(i.p) }}</span>
+          <span class="p" :class="cls(i.pc)">{{ pct(i.pc) }}</span>
+        </div>
+      </div>
+      <div v-if="!idx.length" class="muted" style="padding:8px 4px">指数采集中…</div>
+    </div>
+
+    <div class="badges">
+      <span class="badge" :class="lagCls" :title="lagTitle"><span class="led"></span>{{ lagText }}</span>
+      <span class="badge" :title="sessionNote">{{ sessionText }}</span>
+      <span class="badge" :class="wsCls"><span class="led"></span>{{ wsText }}</span>
+      <button class="tbtn" :class="{on:thrift}" @click="toggleThrift" title="省流模式：全市场降到 9 s、逐笔降到 15 s（t）">省流</button>
+      <button class="tbtn" @click="openLhb" title="龙虎榜（T+1，l）">龙虎榜</button>
+      <button class="tbtn" :class="{on:sound}" @click="sound=!sound" title="声音预警（s）">声音</button>
+      <button class="tbtn" @click="toggleTheme" title="明暗切换（d）">{{ theme==='dark' ? '暗色' : '亮色' }}</button>
+      <button class="tbtn" @click="help=true" title="快捷键与口径说明（?）">?</button>
+    </div>
+  </div>
+  <!-- ══ 顶层 Tab：市场分析 / 选股 ════════════════════ -->
+  <div class="topnav">
+    <button class="nvtab" :class="{on: tab==='market'}" @click="setTab('market')"
+            title="市场宽度 · 板块 · 资金流 · 异动（1）">市场分析</button>
+    <button class="nvtab" :class="{on: tab==='pick'}" @click="setTab('pick')"
+            title="六模式筛选 + 全市场清单（2）">选股</button>
+    <button class="nvtab" :class="{on: tab==='etf'}" @click="setTab('etf')"
+            title="ETF 全量清单 · 分类 · 排行（3）">ETF</button>
+    <button class="nvtab" :class="{on: tab==='wave'}" @click="setTab('wave')"
+            title="波浪理论：指数/自选浪型 + 全市场扫描（4）">波浪</button>
+    <span class="sp" style="flex:1"></span>
+    <span class="muted" v-if="tab==='market'">宽度 · 板块 · 资金流 · 净流入 · 异动</span>
+    <span class="muted" v-else-if="tab==='pick'">六模式筛选 · 全市场 {{ meta.total }} 只 · 自选 · 命中结果</span>
+    <span class="muted" v-else-if="tab==='etf'">场内基金 {{ etf.meta.total }} 只 · 分类规则归类 · 溢价率 na</span>
+    <span class="muted" v-else>指数/自选浪型 · 全市场扫描 · 斐波那契位 + 失效位</span>
+  </div>
+  <div class="main">
+    <!-- ══ Tab 1 · 市场分析 ══════════════════════ -->
+    <div class="pane pane-market" v-show="tab==='market'">
+      <!-- ══ 第 1 列（最左）· 异动：整列高度，点行看 K 线 ══════ -->
+      <div class="col col-alert">
+        <div class="card">
+          <div class="card-h"><span class="t">异动</span><span class="sp"></span>
+            <span class="muted">点行看 K 线 · 只陈述事实</span></div>
+          <div class="card-b tight">
+            <div class="alist">
+              <div class="arow" v-for="(a,i) in alerts.slice(0,120)" :key="i"
+                   :class="a.kind==='speed_up' ? 'up' : (a.kind==='speed_dn' ? 'dn' : '')"
+                   style="cursor:pointer" :title="a.c + ' 打开详情'"
+                   @click="openDetail(a.c)">
+                <span class="at">{{ a.ts }}</span>
+                <span class="ax"><span class="k" :class="'k-'+a.kind">{{ kindLabel[a.kind] || a.kind }}</span>{{ a.text }}</span>
+                <span v-if="a.vr != null" class="avr" :class="a.vr >= 2 ? 'hot' : ''"
+                      :title="'事件时刻量比 ' + a.vr.toFixed(2)">{{ a.vr >= 2 ? '放量' : '量比' }} {{ a.vr.toFixed(1) }}</span>
+              </div>
+              <div v-if="!alerts.length" class="empty">暂无（涨停开板 / 量比突增 / 3 分钟涨速）</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- ══ 第 2 列（中）· 板块 · 资金流 · 净流入 ══════════ -->
+      <div class="col col-mid">
+        <!-- 板块三维 -->
+        <div class="card">
+          <div class="card-h">
+            <span class="t">板块</span>
+            <div class="tabs">
+              <button v-for="k in ['i','c','r']" :key="k" class="tab"
+                      :class="{on: boardKind===k}" @click="switchBoard(k)">{{ kindName[k] }}</button>
+            </div>
+            <span class="sp"></span>
+            <select class="inp" v-model="boardSort" @change="sortBoards">
+              <option value="pct">按涨幅</option>
+              <option value="net" v-if="boardHasNet">按主力净额</option>
+              <option value="amt">按成交额</option>
+              <option value="heat">按热度</option>
+              <option value="up" v-if="boardHasNet">按上涨家数</option>
+            </select>
+            <div class="tabs">
+              <button class="tab" :class="{on: boardView==='matrix'}" @click="boardView='matrix'">矩阵</button>
+              <button class="tab" :class="{on: boardView==='table'}" @click="boardView='table'">表格</button>
+            </div>
+            <span class="muted" :class="{err: boardStale}">{{ boardRows.length }} 个{{ boardStale ? ' · 旧数据' : '' }}</span>
+          </div>
+          <div class="card-b tight" :class="{stale: boardStale}">
+            <div v-if="boardView==='matrix'" class="matrix">
+              <div class="cell" v-for="b in boardRows" :key="b.c" :style="cellStyle(b)" @click="openBoard(b)"
+                   :title="b.n + (b.src === 'sina' ? ' · 成交 ' + b.amt.toFixed(1) + ' 亿' : ' 净额 ' + b.net + ' 亿') + ' · 领涨 ' + (b.ln || '—')">
+                <div class="cn">{{ b.n }}</div>
+                <div class="cp" :class="cls(b.pct)">{{ pct(b.pct) }}</div>
+                <div class="cm" v-if="b.src === 'sina'">{{ b.cnt }}只 · {{ b.ln || '—' }}</div>
+                <div class="cm" :class="cls(b.net)" v-else>净{{ fmtSigned(b.net, 2) }}亿 · {{ b.ln || '—' }}</div>
+              </div>
+              <div v-if="!boardRows.length" class="empty">板块数据采集中（新浪兜底约 0.3 s）</div>
+            </div>
+            <table v-else class="grid">
+              <thead><tr>
+                <th class="l">板块</th><th>涨幅</th><th>主力净额(亿)</th><th>成交额(亿)</th>
+                <th>涨/跌</th><th class="l">领涨股</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="b in boardRows" :key="b.c" @click="openBoard(b)">
+                  <td class="l">{{ b.n }}</td>
+                  <td :class="cls(b.pct)">{{ pct(b.pct) }}</td>
+                  <td :class="cls(b.net)">{{ b.src === 'sina' ? '—' : fmtSigned(b.net, 3) }}</td>
+                  <td>{{ b.amt.toFixed(1) }}</td>
+                  <td v-if="b.src === 'sina'" class="muted">{{ b.cnt }} 只</td>
+                  <td v-else><span class="up">{{ b.up }}</span>/<span class="down">{{ b.dn }}</span></td>
+                  <td class="l muted">{{ b.ln || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 大盘资金流 -->
+        <div class="card">
+          <div class="card-h">
+            <span class="t">大盘资金流</span>
+            <span class="sp"></span>
+            <span class="muted">{{ flowLabel }}</span>
+          </div>
+          <div class="card-b tight">
+            <div style="display:flex;align-items:baseline;gap:8px">
+              <span class="flowbig" :class="cls(flowMain)">{{ fmtSigned(flowMain, 0) }}</span>
+              <span class="muted">亿</span>
+              <span class="sp" style="flex:1"></span>
+              <span class="muted" v-if="flow.market.length">最新 {{ flow.market[flow.market.length-1].t }}</span>
+            </div>
+            <canvas ref="flowc" class="flow"></canvas>
+            <div class="flowlegend">
+              <span>{{ flowSpan }}</span>
+              <span v-if="!flow.market.length" class="err">资金流数据源不可用</span>
+              <span>现在</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 净流入 Top10：板块源有净额就看板块，否则退回个股（新浪兜底没有板块净额）。
+             盘口·逐笔卡已删（未选标的时长期空置）；五档/逐笔仍在详情抽屉里，JS 逻辑保留给抽屉用 -->
+        <div class="card">
+          <div class="card-h"><span class="t">{{ flowTopTitle }}</span><span class="sp"></span>
+            <span class="muted">{{ flowTopNote }}</span></div>
+          <div class="card-b tight">
+            <div class="blist">
+              <div class="brow" v-for="b in flowTop" :key="b.c"
+                   @click="flowTopIsBoard ? openBoard(b) : openDetail(b.c)"
+                   style="cursor:pointer" :title="flowTopIsBoard ? '看成分股' : '看个股详情'">
+                <span class="bn">{{ b.n }}</span>
+                <span class="bbar"><i :style="{width: barW(b.net), background: b.net>=0 ? 'var(--up)' : 'var(--down)'}"></i></span>
+                <span class="num" :class="cls(b.net)">{{ fmtSigned(b.net, 2) }}</span>
+              </div>
+              <div v-if="!flowTop.length" class="empty">等待资金流数据</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <!-- ══ 第 3 列（最右）· 市场宽度（窄栏 · 紧凑） ══════ -->
+      <div class="col col-side">
+        <div class="card">
+          <div class="card-h">
+            <span class="t">市场宽度</span>
+            <span class="sp"></span>
+            <span class="muted">{{ breadth.total || 0 }} 只在册 · 涨跌比 {{ breadth.ratio || 0 }}</span>
+          </div>
+          <div class="card-b">
+            <div class="breadth b3">
+              <div class="kpi"><div class="k">上涨</div><div class="v up">{{ breadth.up || 0 }}</div>
+                <div class="s">占 {{ share(breadth.up) }}</div></div>
+              <div class="kpi"><div class="k">下跌</div><div class="v down">{{ breadth.down || 0 }}</div>
+                <div class="s">占 {{ share(breadth.down) }}</div></div>
+              <div class="kpi"><div class="k">平盘 / 停牌</div><div class="v">{{ breadth.flat || 0 }}<span class="muted" style="font-size:11px"> / {{ breadth.halt || 0 }}</span></div>
+                <div class="s">不计入平盘</div></div>
+              <div class="kpi"><div class="k">涨停 / 跌停</div><div class="v"><span class="up">{{ breadth.zt || 0 }}</span><span class="muted" style="font-size:12px"> / </span><span class="down">{{ breadth.dt || 0 }}</span></div>
+                <div class="s">按涨停价字段判定</div></div>
+              <div class="kpi"><div class="k">涨超5% / 跌超5%</div><div class="v"><span class="up">{{ breadth.up5 || 0 }}</span><span class="muted" style="font-size:12px"> / </span><span class="down">{{ breadth.dn5 || 0 }}</span></div>
+                <div class="s">情绪极端度</div></div>
+              <div class="kpi"><div class="k">沪深成交额</div><div class="v">{{ amtText(breadth.amt_yi) }}</div>
+                <div class="s">北交所 {{ (breadth.amt_bj_yi || 0).toFixed(0) }} 亿另计</div></div>
+            </div>
+
+            <div class="hist">
+              <div v-for="(h,i) in (breadth.hist || [])" :key="i" class="bar"
+                   :class="histCls(i)" :style="{height: histH(h)}" :title="histTitle(i,h)"></div>
+            </div>
+            <div class="hist-x">
+              <span v-for="(l,i) in histLabels" :key="i">{{ l }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 上证指数 · 波浪（与「波浪」Tab 同一套计算结果，此处常驻大盘视角） -->
+        <div class="card">
+          <div class="card-h">
+            <span class="t">上证指数 · 波浪</span>
+            <span class="sp"></span>
+            <span class="muted" v-if="shWave && shWave.ok">置信 {{ shWave.confidence }}</span>
+            <button class="tbtn" :disabled="wave.bloading" @click="loadWaveBatch()"
+                    title="用最新日线重算浪型">刷新</button>
+            <button class="tbtn" @click="openDetailW('sh000001')"
+                    title="打开 K 线并叠加浪型标注">看K线</button>
+          </div>
+          <div class="card-b tight">
+            <div v-if="!shWave && wave.bloading" class="empty">浪型计算中（日线取数约 5 s）</div>
+            <div v-else-if="!shWave && wave.err" class="empty">计算失败：{{ wave.err }}</div>
+            <div v-else-if="!shWave" class="empty">暂无浪型数据，点「看K线」重试</div>
+            <div v-else-if="!shWave.ok" class="empty">{{ (shWave.na || [])[0] || '无数据' }}</div>
+            <div v-else class="wsum">
+              <div class="wrow">
+                <span class="wk">结构</span>
+                <span class="wv">{{ patName(shWave.pattern) }}</span>
+                <span class="wstage">{{ shWave.stage.n }}</span>
+              </div>
+              <div class="wrow sub">{{ shWave.stage.desc }}</div>
+              <div class="wrow">
+                <span class="wk">现价</span>
+                <span class="wv mono">{{ fmt(shWave.price) }}</span>
+                <span class="wk">失效</span>
+                <span class="wv mono" style="color:var(--down)">{{ fmt(shWave.stage.invalid) }}</span>
+              </div>
+              <div class="wrow" v-if="(shWave.stage.targets||[]).length">
+                <span class="wk">斐波</span>
+                <span class="wv">
+                  <span v-for="(tp,i) in (shWave.stage.targets||[]).slice(0,3)" :key="i" class="ftgt mono">{{ tp.r }}× {{ fmt(tp.p) }}</span>
+                </span>
+              </div>
+              <div class="wrow" v-if="(shWave.waves||[]).length">
+                <span class="wk">摆动</span>
+                <span class="wv muted">
+                  <span v-for="w in shWave.waves" :key="w.label">{{ w.label }} {{ fmt(w.p) }} · </span>
+                </span>
+              </div>
+              <div class="wrow sub">日线 {{ shWave.n_bars }} 根 · 概率判断，以失效位为界</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <!-- ══ Tab 2 · 选股 ══════════════════════════ -->
+    <div class="pane pane-pick" v-show="tab==='pick'">
+      <div class="col col-single">
+        <!-- 选股模式面板：六种进攻模式 + 通用筛选。参数默认值来自 /api/picker/meta，前端不硬编码 -->
+        <div class="card">
+          <div class="card-h">
+            <span class="t">选股</span>
+            <span class="muted">A＝快照即判 · B＝需分时精筛</span>
+            <span class="sp"></span>
+            <span class="muted" v-if="pick.loading">筛选中…</span>
+            <span class="muted" v-else-if="pick.stat">命中 {{ pick.stat.total }} · {{ pick.stat.ms }} ms</span>
+            <button class="tbtn" @click="loadPick()">重新筛选</button>
+            <button class="tbtn" @click="watchAllPick" :disabled="!pick.rows.length">全部加自选</button>
+          </div>
+          <div class="card-b tight pickb">
+            <div class="mrow">
+              <span class="mlab">进攻模式</span>
+              <button class="mchip" v-for="m in pick.modes" :key="m.k" :class="{on: pick.sel.includes(m.k)}"
+                      :title="m.d" @click="toggleMode(m.k)"><i>{{ m.icon }}</i>{{ m.n }}<em>{{ m.lv }}</em></button>
+            </div>
+            <div class="mrow">
+              <span class="mlab">通用</span>
+              <span class="fitem">价格<input class="inp xs" v-model.number="pick.general.price_min">–<input class="inp xs" v-model.number="pick.general.price_max"></span>
+              <span class="fitem">市值<input class="inp xs" v-model.number="pick.general.cap_min">–<input class="inp xs" v-model.number="pick.general.cap_max">亿</span>
+              <span class="fitem">换手<input class="inp xs" v-model.number="pick.general.to_min">–<input class="inp xs" v-model.number="pick.general.to_max">%</span>
+              <span class="fitem">成交额≥<input class="inp xs" v-model.number="pick.general.amt_min">亿</span>
+            </div>
+            <div class="mrow">
+              <span class="mlab">板块</span>
+              <button class="mchip" v-for="mk in pick.markets" :key="mk.k"
+                      :class="{on: pick.general.boards.includes(mk.k)}" @click="toggleBoard(mk.k)">{{ mk.n }}</button>
+              <label class="fitem"><input type="checkbox" v-model="pick.general.excl_st" :true-value="1" :false-value="0">排ST</label>
+              <label class="fitem"><input type="checkbox" v-model="pick.general.excl_halt" :true-value="1" :false-value="0">排停牌</label>
+              <label class="fitem"><input type="checkbox" v-model="pick.general.excl_zt" :true-value="1" :false-value="0">排一字板</label>
+              <input class="inp" style="width:150px" v-model="pick.jump" placeholder="单标的:6位代码↵直达"
+                     title="输入6位代码回车，直接打开该标的抽屉" @keyup.enter="jumpCode(pick.jump)">
+              <span class="warn" v-if="jumpErr">{{ jumpErr }}</span>
+              <span class="sp"></span>
+              <button class="tbtn" @click="loadPick()">执行</button>
+            </div>
+            <div class="mrow" v-if="advList.length">
+              <span class="mlab">参数</span>
+              <span class="fitem" v-for="p in advList" :key="p.k">{{ p.n }}<input class="inp xs" v-model.number="pick.adv[p.k]"></span>
+            </div>
+            <div class="mrow note" v-if="pick.stat">
+              <span class="mlab">漏斗</span>
+              <span>通用筛选 {{ pick.stat.pool }} 只 → A 层候选 {{ pick.stat.cands }} → 精筛 {{ pick.stat.probed }} → 命中 {{ pick.stat.total }}</span>
+              <span class="warn" v-if="pick.stat.truncated">· 每种模式按特征各取前 {{ pick.stat.per_mode }} 只，可能截断</span>
+              <span class="warn" v-if="pick.stat.timed_out">· {{ pick.stat.timed_out }} 只分时超时未判</span>
+              <span class="warn" v-if="pick.stat.probed && pick.stat.probe_ok === 0"
+                    title="B 层要用 1m 分时序列判形态，源站取不到就一条都判不了"
+                    style="cursor:help">· 分时源不可用，B 层模式（平台/龙回头/金叉/尾盘）本次全部无法判定</span>
+              <span class="muted" :title="(pick.stat.na || []).join('；')" style="cursor:help">· 数据边界 ⓘ</span>
+            </div>
+            <div class="mrow note" v-if="pick.err" style="color:var(--warn)">{{ pick.err }}</div>
+          </div>
+        </div>
+
+        <!-- 个股表 -->
+        <div class="card">
+          <div class="card-h">
+            <span class="t">个股</span>
+            <div class="tabs">
+              <button class="tab" :class="{on: view==='market'}" @click="setView('market')">全市场</button>
+              <button class="tab" :class="{on: view==='watch'}" @click="setView('watch')">自选</button>
+              <button class="tab" :class="{on: view==='pick'}" @click="setView('pick')">选股</button>
+            </div>
+            <div class="filters" v-if="view==='market'">
+              <input class="inp wide" ref="kw" v-model="filters.kw" placeholder="代码/名称（/ 聚焦）" @keyup.enter="applyFilters">
+              <input class="inp" v-model.number="filters.pct_min" placeholder="涨幅≥%" @keyup.enter="applyFilters">
+              <input class="inp" v-model.number="filters.amt_min" placeholder="额≥亿" @keyup.enter="applyFilters">
+              <label class="muted" style="display:flex;align-items:center;gap:3px">
+                <input type="checkbox" v-model="filters.excl_st" @change="applyFilters">排ST</label>
+              <label class="muted" style="display:flex;align-items:center;gap:3px">
+                <input type="checkbox" v-model="filters.only_zt" @change="applyFilters">只涨停</label>
+              <button class="mchip" v-for="mk in boardChips" :key="mk.k"
+                      :class="{on: filters.boards.includes(mk.k)}"
+                      @click="toggleBoardF(mk.k)">{{ mk.n }}</button>
+              <button class="mchip" v-if="filters.boards.length" @click="filters.boards=[];applyFilters()">全部</button>
+            </div>
+            <span class="sp"></span>
+            <span class="muted" v-if="view==='market'">{{ meta.total }} 只 · 第 {{ meta.page }}/{{ pages }} 页</span>
+            <span class="muted" v-if="view==='watch'">自选 {{ watchRows.length }} 只 · 组
+              <select class="inp" v-model="watchActive" @change="onGroupChange" style="margin-left:4px">
+                <option v-for="g in groupNames" :key="g" :value="g">{{ g }}</option>
+              </select>
+              <button class="tbtn" @click="addGroup" title="新建分组">＋组</button>
+              <button class="tbtn" @click="delGroup" title="删除当前分组">－组</button>
+            </span>
+            <span class="muted" v-if="view==='pick'">
+              {{ pick.stat ? '命中 ' + pick.stat.total + ' / 候选 ' + pick.stat.probed : '未筛选' }}
+            </span>
+          </div>
+
+          <div class="tblwrap">
+            <table class="grid">
+              <thead>
+                <tr>
+                  <th class="l" style="width:96px">代码</th>
+                  <th class="l">名称</th>
+                  <th @click="sortBy('price')" :class="{on: meta.sort==='price'}">现价<span class="ar">{{ ar('price') }}</span></th>
+                  <th @click="sortBy('pct')" :class="{on: meta.sort==='pct'}">涨幅<span class="ar">{{ ar('pct') }}</span></th>
+                  <th v-if="view==='pick'" class="l">模式</th>
+                  <th v-if="view==='pick'">分时</th>
+                  <th v-if="view==='pick'">分</th>
+                  <th @click="sortBy('vol_ratio')" :class="{on: meta.sort==='vol_ratio'}">量比<span class="ar">{{ ar('vol_ratio') }}</span></th>
+                  <th @click="sortBy('turnover')" :class="{on: meta.sort==='turnover'}">换手%<span class="ar">{{ ar('turnover') }}</span></th>
+                  <th @click="sortBy('amt')" :class="{on: meta.sort==='amt'}">成交额亿<span class="ar">{{ ar('amt') }}</span></th>
+                  <th @click="sortBy('amplitude')" :class="{on: meta.sort==='amplitude'}">振幅%<span class="ar">{{ ar('amplitude') }}</span></th>
+                  <th @click="sortBy('cap')" :class="{on: meta.sort==='cap'}">市值亿<span class="ar">{{ ar('cap') }}</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r,i) in rows" :key="r.c" :class="{sel: selCode===r.c}" @click="openDetail(r.c)">
+                  <td class="l">
+                    <span class="star" :class="{on: isWatch(r.c)}" @click.stop="toggleWatch(r.c)" title="加入/移出自选">★</span>
+                    <span class="code">{{ r.c }}</span>
+                  </td>
+                  <td class="l">{{ r.n }}<span v-if="r.st" class="tagst">ST</span>
+                    <span v-if="r.halt" class="muted" style="font-size:10.5px"> 停</span></td>
+                  <td :class="cls(r.pc)" :data-k="r.c">{{ fmt(r.p) }}</td>
+                  <td :class="cls(r.pc)">{{ pct(r.pc) }}</td>
+                  <td v-if="view==='pick'" class="l">
+                    <span class="mact" v-for="mk in (r.modes||[])" :key="mk">{{ modeName(mk) }}</span>
+                  </td>
+                  <td v-if="view==='pick'" class="spk">
+                    <svg v-if="r.spark && r.spark.length > 1" class="sp" :class="r.pc >= 0 ? 'up' : 'down'"
+                         viewBox="0 0 64 18" preserveAspectRatio="none">
+                      <polyline :points="sparkPts(r.spark)"></polyline>
+                    </svg>
+                    <span v-else class="muted">—</span>
+                  </td>
+                  <td v-if="view==='pick'" class="sc" :title="r.why">{{ r.score }}</td>
+                  <td>{{ r.vr ? r.vr.toFixed(2) : '—' }}</td>
+                  <td>{{ r.to ? r.to.toFixed(2) : '—' }}</td>
+                  <td>{{ (r.amt||0).toFixed(2) }}</td>
+                  <td>{{ (r.amp||0).toFixed(2) }}</td>
+                  <td>{{ r.cap ? r.cap.toFixed(0) : '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-if="!rows.length" class="empty">
+              {{ loadErr || pickEmptyText }}
+            </div>
+          </div>
+
+          <div class="pager" v-if="view==='market'">
+            <button :disabled="meta.page<=1" @click="goto(meta.page-1)">上一页</button>
+            <span>{{ meta.page }} / {{ pages }}</span>
+            <button :disabled="meta.page>=pages" @click="goto(meta.page+1)">下一页</button>
+            <span style="flex:1"></span>
+            <span>排序 {{ meta.sort }} {{ meta.order==='desc'?'↓':'↑' }} · 点击表头切换</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ Tab 3 · ETF ══════════════════════════════════ -->
+    <div class="pane pane-etf" v-show="tab==='etf'">
+      <div class="col col-single">
+        <div class="card">
+          <div class="card-h">
+            <span class="t">ETF</span>
+            <span class="muted">东财场内基金 · 分类按名称关键词规则归类</span>
+            <span class="sp"></span>
+            <span class="muted" v-if="etf.loading">加载中…</span>
+            <span class="muted" v-else-if="etf.meta.stale" style="color:var(--warn)">源超时，显示上一批</span>
+            <button class="tbtn" @click="loadEtf(true)">刷新</button>
+          </div>
+          <div class="card-b tight pickb">
+            <div class="mrow">
+              <span class="mlab">分类</span>
+              <button class="mchip" :class="{on: !etf.cat}" @click="setEtfCat('')">全部</button>
+              <button class="mchip" v-for="c in etf.cats" :key="c.k"
+                      :class="{on: etf.cat === c.k}" @click="setEtfCat(c.k)">{{ c.n }}<em>{{ c.n_etf }}</em></button>
+            </div>
+            <div class="mrow">
+              <span class="mlab">筛选</span>
+              <input class="inp" v-model="etf.kw" placeholder="代码/名称" @keyup.enter="loadEtf()">
+              <span class="fitem">成交额≥<input class="inp xs" v-model.number="etf.amt_min">亿</span>
+              <span class="fitem">涨幅≥<input class="inp xs" v-model.number="etf.pct_min">%</span>
+              <input class="inp" style="width:150px" v-model="etf.jump" placeholder="单标的:6位代码↵直达"
+                     title="输入6位代码回车，直接打开该标的抽屉" @keyup.enter="jumpCode(etf.jump)">
+              <span class="warn" v-if="jumpErr">{{ jumpErr }}</span>
+              <span class="sp"></span>
+              <button class="tbtn" @click="loadEtf()">查询</button>
+            </div>
+            <div class="mrow note">
+              <span class="mlab">边界</span>
+              <span class="muted">溢价率算不了（需 IOPV 参考净值，东财无该字段）· 跟踪指数与费率清单接口不提供 · 规模随源变动，只用于排序</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <span class="t">ETF 列表</span>
+            <span class="muted">共 {{ etf.meta.total }} 只</span>
+            <span class="sp"></span>
+            <span class="muted">点表头排序 · 点行看日线与浪型</span>
+          </div>
+          <div class="card-b" style="padding:0">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th @click="sortEtf('code')">代码<span class="ar">{{ etfAr('code') }}</span></th>
+                  <th @click="sortEtf('name')">名称<span class="ar">{{ etfAr('name') }}</span></th>
+                  <th>分类</th>
+                  <th @click="sortEtf('pct')">涨幅<span class="ar">{{ etfAr('pct') }}</span></th>
+                  <th>涨跌额</th>
+                  <th>现价</th>
+                  <th>昨收</th>
+                  <th>振幅%</th>
+                  <th>最高</th>
+                  <th>最低</th>
+                  <th @click="sortEtf('amt')">成交额(亿)<span class="ar">{{ etfAr('amt') }}</span></th>
+                  <th @click="sortEtf('to')">换手%<span class="ar">{{ etfAr('to') }}</span></th>
+                  <th @click="sortEtf('scale')">规模(亿)<span class="ar">{{ etfAr('scale') }}</span></th>
+                  <th title="需 IOPV 参考净值，东财无该字段">溢价</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in etf.rows" :key="r.c" @click="openEtf(r)" style="cursor:pointer">
+                  <td>{{ r.c }}</td>
+                  <td>{{ r.n }}</td>
+                  <td class="muted">{{ catName(r.cat) }}</td>
+                  <td :class="cls(r.pc)">{{ pct(r.pc) }}</td>
+                  <td :class="cls(r.chg)">{{ fmt(r.chg) }}</td>
+                  <td>{{ fmt(r.p) }}</td>
+                  <td>{{ fmt(r.pc0) }}</td>
+                  <td>{{ ampEtf(r) }}</td>
+                  <td>{{ fmt(r.hi) }}</td>
+                  <td>{{ fmt(r.lo) }}</td>
+                  <td>{{ fmt(r.amt) }}</td>
+                  <td>{{ fmt(r.to) }}</td>
+                  <td>{{ fmt(r.sc) }}</td>
+                  <td class="muted" title="无 IOPV 源，算不了">na</td>
+                </tr>
+                <tr v-if="!etf.rows.length">
+                  <td colspan="14" class="empty">{{ etf.loading ? '加载中…' : '没有符合条件的 ETF' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button :disabled="etf.meta.page<=1" @click="gotoEtf(etf.meta.page-1)">上一页</button>
+            <span>{{ etf.meta.page }} / {{ etfPages }}</span>
+            <button :disabled="etf.meta.page>=etfPages" @click="gotoEtf(etf.meta.page+1)">下一页</button>
+            <span style="flex:1"></span>
+            <span class="muted">排序 {{ etf.meta.sort }} {{ etf.meta.order==='desc'?'↓':'↑' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ Tab 4 · 波浪理论 ══════════════════════════════ -->
+    <div class="pane pane-wave" v-show="tab==='wave'">
+      <div class="col col-single">
+        <div class="card">
+          <div class="card-h">
+            <span class="t">指数 / 自选 浪型</span>
+            <span class="muted">日线波段 · 灵敏度 {{ wave.pct === null ? '自适应' : wave.pct + '%' }}</span>
+            <span class="sp"></span>
+            <span class="muted" v-if="wave.bloading">计算中…</span>
+            <button class="tbtn" :class="{on: wave.pct === null}" @click="setWavePct(null)">自适应</button>
+            <button class="tbtn" v-for="p in wavePcts" :key="p" :class="{on: wave.pct === p}"
+                    @click="setWavePct(p)">{{ p }}%</button>
+            <button class="tbtn" @click="loadWaveBatch()">刷新</button>
+          </div>
+          <div class="card-b tight">
+            <div class="wgrid">
+              <div class="wcard" v-for="r in wave.idx" :key="r.code"
+                   style="cursor:pointer"
+                   :title="'打开 K 线并叠加浪型标注（' + (r.name || r.code) + '）'"
+                   @click="openDetailW(r.code)">
+                <div class="wh">
+                  <b>{{ r.name || r.code }}</b>
+                  <span class="muted">{{ r.code }}</span>
+                  <span class="sp"></span>
+                  <span class="muted" v-if="r.ok">置信 {{ r.confidence }}</span>
+                </div>
+                <div class="wb" v-if="r.ok">
+                  <span class="wtag">{{ patName(r.pattern) }}</span>
+                  <span class="wstage">{{ r.stage.n }}</span>
+                  <div class="wline muted">{{ r.stage.desc }}</div>
+                  <div class="wline" v-if="(r.stage.targets||[]).length">
+                    目标 <span v-for="(tp,i) in (r.stage.targets||[]).slice(0,3)" :key="i"
+                              class="mono">{{ tp.r }}× {{ fmt(tp.p) }}</span>
+                  </div>
+                  <div class="wline">失效 <span class="mono">{{ fmt(r.stage.invalid) }}</span></div>
+                  <div class="wline muted" v-if="(r.waves||[]).length">
+                    <span v-for="w in r.waves" :key="w.label">{{ w.label }} {{ fmt(w.p) }} · </span>
+                  </div>
+                </div>
+                <div class="wb muted" v-else>{{ (r.na || [])[0] || '无数据' }}</div>
+              </div>
+              <div class="wcard muted" v-if="!wave.idx.length">指数与自选都没算出来（日线源不可用？）</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <span class="t">全市场浪型扫描</span>
+            <span class="muted" v-if="wave.stat">
+              池 {{ wave.stat.pool }} → 精算 {{ wave.stat.probed }} → 命中 {{ wave.stat.total }} · {{ wave.stat.ms }} ms
+            </span>
+            <span class="sp"></span>
+            <span class="muted" v-if="wave.busy">扫描中…</span>
+            <button class="tbtn" @click="loadWaveScan()">执行扫描</button>
+          </div>
+          <div class="card-b tight pickb">
+            <div class="mrow">
+              <span class="mlab">浪型</span>
+              <button class="mchip" v-for="tg in wave.tags" :key="tg.k"
+                      :class="{on: wave.sel.includes(tg.k)}" :title="tg.d"
+                      @click="toggleWaveTag(tg.k)">{{ tg.n }}</button>
+              <span class="muted" style="font-size:11px">不选＝全部 · 结构不清的标的不进结果</span>
+            </div>
+            <div class="mrow">
+              <span class="mlab">参数</span>
+              <span class="fitem">置信≥<input class="inp xs" v-model.number="wave.min_conf"></span>
+              <span class="fitem">精算只数<input class="inp xs" v-model.number="wave.probe"></span>
+              <span class="fitem">成交额≥<input class="inp xs" v-model.number="wave.amt_min">亿</span>
+              <span class="sp"></span>
+              <span class="muted" v-if="wave.stat && wave.stat.probe_ok === 0"
+                    style="color:var(--warn)">日线源不可用，本次一条都判不了</span>
+              <span class="muted" v-else-if="wave.stat">
+                实取日线 {{ wave.stat.probe_ok }} 只<template v-if="wave.stat.timed_out"> · {{ wave.stat.timed_out }} 只超时未判</template>
+              </span>
+            </div>
+            <div class="mrow note" v-if="wave.stat && (wave.stat.na||[]).length">
+              <span class="mlab">边界</span>
+              <span class="muted">{{ (wave.stat.na||[]).join(' · ') }}</span>
+            </div>
+          </div>
+          <div class="card-b" style="padding:0">
+            <table class="tbl">
+              <thead>
+                <tr>
+                  <th>代码</th><th>名称</th><th>现价</th><th>涨幅</th>
+                  <th>浪型</th><th>阶段</th><th>目标</th><th>失效</th><th>置信</th><th>依据</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in wave.rows" :key="r.c" @click="openDetailW(r.c)" style="cursor:pointer" title="打开详情并自动叠加浪型标注">
+                  <td>{{ r.c }}</td>
+                  <td>{{ r.n }}</td>
+                  <td>{{ fmt(r.p) }}</td>
+                  <td :class="cls(r.pc)">{{ pct(r.pc) }}</td>
+                  <td>{{ r.tag_n }}</td>
+                  <td>{{ r.stage }}</td>
+                  <td class="mono">{{ fmt(r.tgt) }}</td>
+                  <td class="mono">{{ fmt(r.inv) }}</td>
+                  <td>{{ r.conf }}</td>
+                  <td class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis">{{ r.why }}</td>
+                </tr>
+                <tr v-if="!wave.rows.length">
+                  <td colspan="10" class="empty">
+                    {{ wave.busy ? '扫描中…' : (wave.stat ? '本次没扫到结构清晰的标的——换个灵敏度或放宽置信度再试' : '点「执行扫描」开始（按成交额取前 N 只拉日线算浪型）') }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 详情抽屉 ═══════════════════════════════════ -->
+  <div class="drawer" :class="{open: drawerOpen}">
+    <div class="drawer-h">
+      <span class="dn">{{ detail ? detail.n : '—' }}</span>
+      <span class="code">{{ detail ? detail.c : '' }}</span>
+      <span v-if="detail" :class="cls(detail.pc)" style="font-weight:700">{{ fmt(detail.p) }} {{ pct(detail.pc) }}</span>
+      <span class="sp" style="flex:1"></span>
+      <button class="tbtn" @click="toggleWatch(detail && detail.c)" v-if="detail">
+        {{ isWatch(detail.c) ? '移出自选' : '加入自选' }}</button>
+      <button class="tbtn" :class="{on: sboard.open}" v-if="detail" @click="toggleSBoard"
+              title="所属板块 · 板块资金 · 个股梯队 · 强度持续性">板块</button>
+      <button class="tbtn" @click="closeDrawer">关闭</button>
+    </div>
+    <div class="drawer-b" v-if="detail">
+      <div class="qgrid">
+        <div class="q"><div class="k">今开</div><div class="v">{{ fmt(detail.o) }}</div></div>
+        <div class="q"><div class="k">最高</div><div class="v up">{{ fmt(detail.h) }}</div></div>
+        <div class="q"><div class="k">最低</div><div class="v down">{{ fmt(detail.l) }}</div></div>
+        <div class="q"><div class="k">昨收</div><div class="v">{{ fmt(detail.prev) }}</div></div>
+        <div class="q"><div class="k">成交量(手)</div><div class="v">{{ detail.v }}</div></div>
+        <div class="q"><div class="k">成交额(亿)</div><div class="v">{{ (detail.amt||0).toFixed(2) }}</div></div>
+        <div class="q"><div class="k">换手%</div><div class="v">{{ (detail.to||0).toFixed(2) }}</div></div>
+        <div class="q"><div class="k">量比</div><div class="v">{{ (detail.vr||0).toFixed(2) }}</div></div>
+        <div class="q"><div class="k">振幅%</div><div class="v">{{ (detail.amp||0).toFixed(2) }}</div></div>
+        <div class="q"><div class="k">市盈率</div><div class="v">{{ detail.pe ? detail.pe.toFixed(1) : '—' }}</div></div>
+        <div class="q"><div class="k">市净率</div><div class="v">{{ detail.pb ? detail.pb.toFixed(2) : '—' }}</div></div>
+        <div class="q"><div class="k">总市值(亿)</div><div class="v">{{ (detail.cap||0).toFixed(0) }}</div></div>
+        <div class="q"><div class="k">涨停价</div><div class="v up">{{ fmt(detail.lu) }}</div></div>
+        <div class="q"><div class="k">跌停价</div><div class="v down">{{ fmt(detail.ld) }}</div></div>
+        <div class="q"><div class="k">外盘(手)</div><div class="v">{{ detail.out }}</div></div>
+        <div class="q"><div class="k">内盘(手)</div><div class="v">{{ detail.in }}</div></div>
+      </div>
+
+      <div class="sect khead">
+        <span>K 线</span>
+        <span class="kper">
+          <button v-for="p in kPeriods" :key="p.k" :class="{on: kPeriod === p.k}"
+                  @click="setPeriod(p.k)">{{ p.n }}</button>
+        </span>
+        <span class="kzoom">
+          <button @click="kZoomStep(1)" title="放大（看得更少更细）">＋</button>
+          <button @click="kZoomStep(-1)" title="缩小（看得更多）">－</button>
+          <button @click="kFull()" title="全览">全览</button>
+          <button @click="kReset()" title="回到默认视角">复位</button>
+        </span>
+        <span class="sp" style="flex:1"></span>
+        <button class="tbtn" :class="{on: kWave.on}" @click="toggleKWave"
+                title="在 K 线上叠加浪型标注与斐波那契位（按日线计算）">波浪</button>
+      </div>
+      <div class="kwrap">
+        <canvas ref="kc" class="kchart"
+                @mousemove="kMove" @mouseleave="kLeave"
+                @wheel.prevent="kWheel" @dblclick="kReset"
+                @pointerdown="kDown" @pointermove="kDragMove"
+                @pointerup="kUp" @pointercancel="kUp" @pointerleave="kUp"></canvas>
+        <div class="ktip" v-if="kTip">
+          <div><b>{{ kTip.t }}</b></div>
+          <div>开 {{ fmt(kTip.o) }}　高 <span class="up">{{ fmt(kTip.h) }}</span></div>
+          <div>低 <span class="down">{{ fmt(kTip.l) }}</span>　收 <span :class="cls(kTip.c - kTip.o)">{{ fmt(kTip.c) }}</span></div>
+          <div>量 {{ kVolFmt(kTip.v) }} 手<span v-if="kTip.amt">　额 {{ (kTip.amt/1e8).toFixed(2) }}亿</span></div>
+          <div v-if="kTip.ma5">MA5 {{ fmt(kTip.ma5) }}　MA10 {{ fmt(kTip.ma10) }}</div>
+        </div>
+      </div>
+      <div class="kmeta muted" v-if="kBars.length">
+        <span>MA5 <i class="dot ma5"></i></span>
+        <span>MA10 <i class="dot ma10"></i></span>
+        <span>MA20 <i class="dot ma20"></i></span>
+        <span style="margin-left:auto">共 {{ kMeta.n || kBars.length }} 根 · {{ srcName(kMeta.src) }}</span>
+      </div>
+      <div class="muted" v-if="!kBars.length" style="font-size:11.5px;margin-top:-2px">
+        {{ kMeta.err ? '无 K 线数据：' + kMeta.err : 'K 线加载中…' }}
+      </div>
+      <div class="klegend" v-if="kBars.length">
+        <span class="res"><i class="dot"></i>压力 R1~R3</span>
+        <span class="sup"><i class="dot"></i>支撑 S1~S3</span>
+        <span class="chip"><i class="dot"></i>筹码密集</span>
+        <span class="hint">滚轮缩放 · 拖拽平移 · 双击复位</span>
+      </div>
+      <div class="wblock" v-if="kWave.on">
+        <div class="muted" v-if="kWave.loading">浪型计算中…</div>
+        <template v-else-if="kWave.data && kWave.data.ok">
+          <div class="wrow">
+            <span class="wtag">{{ patName(kWave.data.pattern) }}</span>
+            <span class="wstage">{{ kWave.data.stage.n }}</span>
+            <span class="muted">置信 {{ kWave.data.confidence }}</span>
+            <span class="muted">阈值 {{ kWave.data.pct }}%（近 20 日均振幅 {{ kWave.data.amp20 }}%）</span>
+            <span class="sp" style="flex:1"></span>
+            <span class="muted">{{ kWave.data.stage.desc }}</span>
+          </div>
+          <div class="wrow">
+            <span class="mlab">浪型</span>
+            <span v-for="w in kWave.data.waves" :key="w.label" class="mono">{{ w.label }} {{ fmt(w.p) }}</span>
+            <span class="sp" style="flex:1"></span>
+            <span class="muted">失效位 <b class="mono">{{ fmt(kWave.data.stage.invalid) }}</b></span>
+          </div>
+          <div class="wrow">
+            <span class="mlab">斐波那契</span>
+            <span v-for="f in (kWave.data.fib.retr||[])" :key="'r'+f.r" class="mono"
+                  :title="'回撤 '+f.r">{{ fmt(f.p) }}</span>
+            <span class="sp"></span>
+            <span class="muted">目标</span>
+            <span v-for="f in (kWave.data.fib.ext||[]).slice(0,3)" :key="'e'+f.r" class="mono"
+                  :title="'扩展 '+f.r+'×'">{{ fmt(f.p) }}</span>
+          </div>
+          <div class="muted" style="font-size:11px">{{ kWave.data.note }}</div>
+        </template>
+        <div class="muted" v-else-if="kWave.data">
+          {{ (kWave.data.na || [])[0] || '这段行情数不出规则内的浪型' }}
+        </div>
+        <div class="muted" v-else-if="kPeriod !== 'day'">波浪按日线计算，切回「日」周期后可叠加</div>
+      </div>
+
+      <div class="sect">分钟走势（每分钟落库，仅交易时段有数据）</div>
+      <canvas ref="sparkc" class="spark"></canvas>
+      <div class="muted" v-if="!histSeries.length" style="font-size:11px;margin-top:-4px">
+        暂无历史点。落库任务每 60 s 写一次，收盘后可回看。
+      </div>
+
+      <div class="sect" v-if="detail.isEtf">ETF</div>
+      <div class="qgrid" v-if="detail.isEtf">
+        <div class="q"><div class="k">分类</div><div class="v">{{ catName(detail.cat) }}</div></div>
+        <div class="q"><div class="k">规模(亿)</div><div class="v">{{ fmt(detail.sc) }}</div></div>
+        <div class="q"><div class="k">换手%</div><div class="v">{{ fmt(detail.to) }}</div></div>
+        <div class="q"><div class="k">溢价率</div><div class="v muted" title="需 IOPV 参考净值，东财无该字段">na</div></div>
+      </div>
+
+      <div class="sect" v-if="!detail.isEtf && !detail.index">五档盘口</div>
+      <div class="book" v-if="!detail.isEtf && !detail.index">
+        <div class="lvl" v-for="(l,i) in (detail.a||[]).slice().reverse()" :key="'da'+i">
+          <span class="ln">卖{{ 5-i }}</span><span class="lp down">{{ fmt(l[0]) }}</span>
+          <span class="lv">{{ l[1] }}</span>
+          <i class="depth" :style="{width: depthW(l[1]), background:'var(--down)'}"></i>
+        </div>
+        <div class="mid"><span>内外比 {{ detail.oir || '—' }}</span><span>买一/卖一</span>
+          <span>{{ fmt(detail.b1) }} / {{ fmt(detail.a1) }}</span></div>
+        <div class="lvl" v-for="(l,i) in (detail.b||[])" :key="'db'+i">
+          <span class="ln">买{{ i+1 }}</span><span class="lp up">{{ fmt(l[0]) }}</span>
+          <span class="lv">{{ l[1] }}</span>
+          <i class="depth" :style="{width: depthW(l[1]), background:'var(--up)'}"></i>
+        </div>
+      </div>
+
+      <div class="sect" v-if="!detail.isEtf && !detail.index">
+        <span>资金流（四档，亿元）</span>
+        <span class="muted" style="font-size:11px;margin-left:8px" v-if="detail.flow">
+          主力 {{ fmtSigned(detail.flow.net, 2) }}
+          <template v-if="detail.flow.net_pct != null">· 占成交额 {{ detail.flow.net_pct }}%</template>
+          · {{ detail.flow.src === 'sina' ? '新浪逐只查' : '东财' }}
+        </span>
+      </div>
+      <div v-if="detail.flow && !detail.index" class="flowbars">
+        <div class="fb" v-for="f in flowRows" :key="f.k">
+          <span class="muted">{{ f.k }}</span>
+          <span class="track"><i :style="{width: f.w, background: f.v>=0 ? 'var(--up)' : 'var(--down)'}"></i></span>
+          <span class="num" :class="cls(f.v)">{{ fmtSigned(f.v, 3) }}</span>
+        </div>
+      </div>
+      <div v-else-if="!detail.index" class="muted" style="font-size:11.5px">
+        资金流取不到：源站对停牌/退市/无成交标的返回空，指数也没有四档数据
+      </div>
+
+      <div class="sect" v-if="!detail.isEtf && !detail.index">逐笔成交</div>
+      <div class="ticks" style="max-height:200px" v-if="!detail.isEtf && !detail.index">
+        <div class="trow" v-for="(t,i) in (detail.ticks||[]).slice().reverse()" :key="i">
+          <span class="tt">{{ t.t }}</span>
+          <span class="tp" :class="t.s===2?'up':'down'">{{ fmt(t.p) }}</span>
+          <span class="tv">{{ t.v }}</span>
+        </div>
+        <div v-if="!(detail.ticks||[]).length" class="empty">逐笔仅自选池前 20 只采集</div>
+      </div>
+      <div class="muted" v-if="detail.index" style="font-size:11.5px">
+        指数没有五档 / 资金流 / 逐笔，这里只给行情快照与 K 线浪型标注。
+      </div>
+      <!-- ── 操作建议：与选股面板同一套判定（指数无此判定） ── -->
+      <div class="sect" v-if="!detail.index">操作建议 · 按选股六模式 <span class="muted" v-if="advLoading">判定中（B 层需拉分时，几秒）…</span></div>
+      <template v-if="adv && adv.ok">
+        <div class="advbox" :class="'tone-' + adv.tone">
+          <div class="advhead"><b>{{ adv.verdict }}</b>
+            <span class="muted">综合 {{ adv.score }} 分 · 命中 {{ adv.hits.length }} 模式</span></div>
+          <div class="advact">{{ adv.act }}</div>
+          <div class="advmodes">
+            <div class="advm" v-for="m in adv.modes" :key="m.k" :class="{hit: m.hit}">
+              <span class="mn">{{ m.n }}<i>{{ m.lv }}</i></span>
+              <span class="mw" :class="m.hit ? 'up' : 'muted'">{{ m.hit ? '✓ ' : '' }}{{ m.why }}</span>
+            </div>
+          </div>
+          <div class="muted" style="font-size:11.5px" v-if="adv.stops && adv.stops.length">纪律：{{ adv.stops.join('；') }}</div>
+          <div class="muted" style="font-size:11.5px" v-if="adv.r1">日线近压力 {{ fmt(adv.r1) }} · 近支撑 {{ adv.s1 ? fmt(adv.s1) : '—' }}</div>
+          <div class="muted" style="font-size:11.5px" v-for="(nt,i) in adv.notes" :key="'n'+i">{{ nt }}</div>
+        </div>
+      </template>
+      <div v-else-if="adv && !adv.ok && !detail.index" class="muted">{{ adv.error }}</div>
+
+      <!-- ── 板块信息：归属 / 资金 / 梯队 / 强度持续性 ── -->
+      <div class="sect" v-if="!detail.index" style="display:flex;align-items:center;gap:8px">
+        <span>板块信息</span>
+        <button class="tbtn" @click="toggleSBoard">{{ sboard.open ? '收起' : '展开' }}</button>
+        <span class="muted" v-if="sboard.open && sboard.idx && sboard.idx.building">归属索引构建中 {{ sboard.idx.done_n }}/{{ sboard.idx.n_boards }} 类…</span>
+        <span class="muted" v-if="sboard.open && sboard.loading">查归属…</span>
+      </div>
+      <template v-if="sboard.open && !detail.index">
+        <div class="mrow" v-if="sboard.boards.length">
+          <span class="mlab">所属</span>
+          <button class="mchip" v-for="b in sboard.boards" :key="b.c" :class="{on: sboard.sel===b.c}"
+                  @click="selBoard(b.c)">{{ b.n }}<em>{{ pct(b.pct) }}</em></button>
+        </div>
+        <div v-if="!sboard.boards.length && !sboard.loading && sboard.idx && !sboard.idx.building && sboard.idx.done"
+             class="muted">归属索引里没有这只票（新股或索引未覆盖）</div>
+        <div v-if="sboard.ploading" class="muted">板块面板加载中…</div>
+        <template v-else-if="sboard.panel && sboard.panel.ok">
+          <div class="qgrid">
+            <div class="q"><div class="k">梯队（{{ sboard.panel.total }} 只）</div><div class="v" style="font-size:12px">
+              涨停 {{ sboard.panel.ladder.zt }} · ≥5% {{ sboard.panel.ladder.up5 }} · 0~5% {{ sboard.panel.ladder.up0 }} · 下跌 {{ sboard.panel.ladder.dn }}</div></div>
+            <div class="q"><div class="k">强度</div><div class="v">{{ sboard.panel.strength.label }}</div></div>
+            <div class="q"><div class="k">持续性</div><div class="v">{{ sboard.panel.persist.ok ? (sboard.panel.persist.label + ' 近5日' + (sboard.panel.persist.chg5>0?'+':'') + sboard.panel.persist.chg5 + '%') : '—' }}</div></div>
+          </div>
+          <div class="muted" style="font-size:11.5px" v-if="!sboard.panel.persist.ok">{{ sboard.panel.persist.note }}</div>
+          <div class="muted" style="font-size:11.5px" v-if="sboard.panel.truncated">梯队只统计涨幅前 {{ sboard.panel.total }} 只（成分股过多，已截断）</div>
+          <table class="tbl">
+            <thead><tr><th class="l">前排</th><th>现价</th><th>涨幅</th></tr></thead>
+            <tbody>
+              <tr v-for="r in sboard.panel.top" :key="'tp'+r.c" style="cursor:pointer" @click="openDetail(r.c)">
+                <td class="l">{{ r.n }}</td><td>{{ fmt(r.p) }}</td><td :class="cls(r.pc)">{{ pct(r.pc) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="muted" style="font-size:11.5px" v-if="sboard.panel.zt.length">涨停：{{ sboard.panel.zt.map(x=>x.n).join('、') }}</div>
+          <div class="muted" style="font-size:11.5px">
+            资金流向（{{ sboard.panel.flow.note }}）：净额 <b :class="cls(sboard.panel.flow.net)">{{ fmtSigned(sboard.panel.flow.net,2) }} 亿</b>
+            · 覆盖 {{ sboard.panel.flow.cov }}%（{{ sboard.panel.flow.hit }}/{{ sboard.panel.total }}）
+            <span v-if="sboard.panel.flow.top.length">· 首贡献 {{ sboard.panel.flow.top[0].n }} {{ fmtSigned(sboard.panel.flow.top[0].net,2) }}</span>
+          </div>
+          <div class="muted" style="font-size:11.5px" v-for="it in sboard.panel.strength.items" :key="it.k">
+            {{ it.k }} {{ it.v }} → <b>{{ it.judge }}</b>（{{ it.rule }}）
+          </div>
+        </template>
+        <div v-else-if="sboard.panel && !sboard.panel.ok" class="muted">{{ sboard.panel.error }}</div>
+      </template>
+    </div>
+    <div class="drawer-b" v-else>
+      <div class="empty">加载中…</div>
+    </div>
+  </div>
+
+  <!-- ══ 板块成分股抽屉 ════════════════════════════ -->
+  <div class="drawer" :class="{open: boardOpen}" style="width:min(520px,72vw)">
+    <div class="drawer-h">
+      <span class="dn">{{ boardSel ? boardSel.n : '板块' }}</span>
+      <span v-if="boardSel" :class="cls(boardSel.pct)">{{ pct(boardSel.pct) }}</span>
+      <span style="flex:1"></span>
+      <button class="tbtn" @click="boardOpen=false">关闭</button>
+    </div>
+    <div class="drawer-b">
+      <div class="muted" v-if="boardSel">
+        <template v-if="boardSel.src === 'sina'">
+          成交额 {{ boardSel.amt.toFixed(1) }} 亿 · {{ boardSel.cnt }} 只成分股 · 领涨 {{ boardSel.ln || '—' }}
+          <span class="muted">（新浪兜底源，无主力净额与涨跌家数）</span>
+        </template>
+        <template v-else>主力净额 {{ fmtSigned(boardSel.net,2) }} 亿 · 上涨 {{ boardSel.up }} / 下跌 {{ boardSel.dn }} · 领涨 {{ boardSel.ln || '—' }}</template>
+      </div>
+      <table class="grid">
+        <thead><tr><th class="l">代码</th><th class="l">名称</th><th>现价</th><th>涨幅</th><th>净额亿</th></tr></thead>
+        <tbody>
+          <tr v-for="r in boardMembers" :key="r.c" @click="openDetail(r.c)">
+            <td class="l code">{{ r.c }}</td>
+            <td class="l">{{ r.n }}</td>
+            <td :class="cls(r.pc)">{{ fmt(r.p) }}</td>
+            <td :class="cls(r.pc)">{{ pct(r.pc) }}</td>
+            <td :class="cls(r.net)">{{ fmtSigned(r.net,3) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="!boardMembers.length" class="empty">成分股加载中…</div>
+    </div>
+  </div>
+
+  <!-- ══ 龙虎榜抽屉（T+1 数据）══════════════════════ -->
+  <div class="drawer" :class="{open: lhbOpen}" style="width:660px">
+    <div class="drawer-h">
+      <span class="dn">龙虎榜</span>
+      <input type="date" class="inp" v-model="lhbDate" @change="loadLhb">
+      <button class="tbtn" @click="lhbDate=''; loadLhb()">最新</button>
+      <span class="muted" style="font-size:11px" v-if="lhbMeta.source">
+        {{ lhbMeta.source === 'db' ? '本地库' : '实时拉取' }} · {{ lhbRows.length }} 条
+      </span>
+      <span style="flex:1"></span>
+      <button class="tbtn" @click="lhbOpen=false">关闭</button>
+    </div>
+    <div class="drawer-b">
+      <div class="muted" style="font-size:11.5px;line-height:1.6">
+        T+1 数据：交易所收盘后发布，当天 15:05 的收盘作业会抓最近一日入库。点行看个股详情。
+      </div>
+      <table class="grid">
+        <thead><tr>
+          <th class="l">日期</th><th class="l">代码</th><th class="l">名称</th>
+          <th>涨幅</th><th>买入亿</th><th>卖出亿</th><th>净额亿</th>
+          <th class="l">席位</th><th class="l">上榜原因</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="(r,i) in lhbRows" :key="i" @click="openDetail(r.c)">
+            <td class="l code">{{ r.date }}</td>
+            <td class="l code">{{ r.c }}</td>
+            <td class="l">{{ r.n }}</td>
+            <td :class="cls(r.pc)">{{ pct(r.pc) }}</td>
+            <td>{{ (r.buy||0).toFixed(2) }}</td>
+            <td>{{ (r.sell||0).toFixed(2) }}</td>
+            <td :class="cls(r.net)">{{ fmtSigned(r.net, 2) }}</td>
+            <td class="l muted" style="max-width:150px;overflow:hidden;text-overflow:ellipsis">{{ r.seat }}</td>
+            <td class="l muted" style="max-width:160px;overflow:hidden;text-overflow:ellipsis">{{ r.reason }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="!lhbRows.length" class="empty">{{ lhbMsg || '暂无数据' }}</div>
+    </div>
+  </div>
+
+  <!-- ══ 帮助 ═════════════════════════════════════ -->
+  <div class="help" v-if="help" @click.self="help=false">
+    <div class="box">
+      <h3>快捷键与口径</h3>
+      <table>
+        <tr><td><kbd>/</kbd></td><td>聚焦搜索框</td><td><kbd>?</kbd></td><td>本帮助</td></tr>
+        <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>下 / 上一行，<kbd>Enter</kbd> 看详情</td><td><kbd>Esc</kbd></td><td>关闭抽屉</td></tr>
+        <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>上 / 下一页</td><td><kbd>d</kbd></td><td>明暗切换</td></tr>
+        <tr><td><kbd>s</kbd></td><td>声音开关</td><td><kbd>t</kbd></td><td>省流模式</td></tr>
+        <tr><td><kbd>l</kbd></td><td>龙虎榜（T+1）</td><td><kbd>j</kbd>/<kbd>k</kbd>+<kbd>Enter</kbd></td><td>逐行浏览并看详情</td></tr>
+        <tr><td><kbd>1</kbd></td><td>市场分析 Tab</td><td><kbd>2</kbd></td><td>选股 Tab</td></tr>
+        <tr><td><kbd>3</kbd></td><td>ETF Tab</td><td><kbd>4</kbd></td><td>波浪 Tab</td></tr>
+      </table>
+      <p class="muted" style="font-size:12px;line-height:1.7;margin:12px 0 0">
+        <b>口径</b>：涨停/跌停按快照的涨停价字段判定（不是百分比），北交所 30%、ST 5%、创业科创 20% 自动正确；
+        「沪深成交额」不含北交所；停牌单独计数、不计入平盘。<br>
+        <b>延迟</b>：午休与盘后源端时间戳本来就不推进，延迟累积到几十秒属正常，此时不告警。<br>
+        <b>资金流</b>：免费源只有 Top100 排行，不是全市场；四档单型只在详情里按需取。<br>
+        <b>声明</b>：本工具仅呈现行情事实，不构成任何投资建议。
+      </p>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/vue.global.prod.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

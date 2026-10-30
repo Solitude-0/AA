@@ -1,0 +1,16 @@
+{
+ "ts": "2026-10-23T12:43:43",
+ "codes": 5343,
+ "rounds": 8,
+ "workers": 8,
+ "wall_avg_ms": 367.1,
+ "wall_p95_ms": 395.6,
+ "wall_max_ms": 400.8,
+ "hit_rate": 1.0,
+ "bad_total": 0,
+ "lag_median": 2269.8,
+ "heap_mb": 11.6,
+ "db_copy_ms": 166.7,
+ "db_rows": 5343,
+ "db_ok": true
+}

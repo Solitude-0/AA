@@ -1,5 +1,6 @@
 {
- "codes_source": "E:\\workbuddy_work\\测试\\.build\\codes.json",
+ "codes_source": "data/codes.json（本项目自有，5343 只）",
+ "codes_source_note": "2026-10-23 首次探测时曾借用外部清单做样本；同日已内化为 data/codes.json，后续复跑一律用自有文件",
  "tx_snapshot": {
   "batch": 300,
   "hit": 300,

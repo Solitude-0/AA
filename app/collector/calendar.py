@@ -99,7 +99,9 @@ def tick_interval(kind: str = "index", state: str | None = None) -> float:
         return base
     if st == "lunch":
         return 60.0
-    mult = {"index": 1.0, "full": 3.0, "board": 5.0, "flow": 5.0, "tick": 5.0}.get(kind, 5.0)
+    # 资金流 60 s：兜底源是逐只查（120 只 ≈ 9 s），5 s 一轮等于每秒 24 个请求，
+    # 既浪费又容易被新浪限流；而资金流本身就是「日内累计值」，60 s 分辨率足够。
+    mult = {"index": 1.0, "full": 3.0, "board": 5.0, "flow": 60.0, "tick": 5.0}.get(kind, 5.0)
     return max(base * mult, 0.5)
 
 

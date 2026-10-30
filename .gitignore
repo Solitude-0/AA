@@ -23,3 +23,7 @@ logs/
 # 系统
 Thumbs.db
 .DS_Store
+
+# 测试临时
+.tmp/
+.scratch/

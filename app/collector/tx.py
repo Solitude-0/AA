@@ -39,6 +39,21 @@ def sym_of(code: str) -> str:
     return "sz" + c
 
 
+def is_index_sym(sym: str) -> bool:
+    """指数字段语义与个股不同，必须区别对待。
+
+    sh000xxx（上证系列）/ sz399xxx（深证系列）/ bj899xxx（北证）是指数。
+    指数的 [3]「现价」是点位而不是股价，[6] 是成分股成交量（手），
+    因此**不能用「成交额÷量÷现价」推单位**——实测上证该比值是 0.42，
+    会被量级断言当成坏数据丢掉。这个坑是 M1 接指数时才暴露的。
+    """
+    s = sym[2:] if len(sym) > 2 else sym
+    p = sym[:2]
+    return ((p == "sh" and s.startswith("000")) or
+            (p == "sz" and s.startswith("399")) or
+            (p == "bj" and s.startswith("899")))
+
+
 def _f(v: str) -> float:
     try:
         return float(v)
@@ -114,7 +129,8 @@ def parse_line(key: str, body: str, stats: ParseStats) -> Quote | None:
             amt_yuan = amt_wan * 1e4
 
         share_per_unit = 100                      # 默认：1 手 = 100 股
-        if amt_yuan > 0 and vol_raw > 0 and price > 0:
+        is_idx = is_index_sym(key)
+        if not is_idx and amt_yuan > 0 and vol_raw > 0 and price > 0:
             ratio = (amt_yuan / vol_raw) / price
             # 量单位是「股」→ 成交额/量 ≈ 现价（ratio≈1）
             # 量单位是「手」→ 成交额/量 ≈ 现价×100（ratio≈100）
@@ -122,7 +138,8 @@ def parse_line(key: str, body: str, stats: ParseStats) -> Quote | None:
                 share_per_unit = 1
 
         # 断言三：均价与现价不应差 2 倍以上（防单位错位、防万元/元混用）
-        if amt_yuan > 0 and vol_raw > 0:
+        # 指数跳过——指数的点位与成分股均价无关，强行断言只会把正确数据丢掉
+        if not is_idx and amt_yuan > 0 and vol_raw > 0:
             implied = amt_yuan / vol_raw
             expect = price * share_per_unit
             if expect > 0 and not (0.5 < implied / expect < 2.0):
